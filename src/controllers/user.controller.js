@@ -1,8 +1,25 @@
-import apiError from "../utils/apiError.js"
+import {apiError} from "../utils/apiError.js"
 import {asyncHandler} from "../utils/asyncHandler.js"
 import {User} from "../models/user.model.js"
 import cloudinaryUpload from "../utils/cloudinary.js"
 import {apiResponse} from "../utils/apiResponse.js"
+
+const generateAcessandRefreshTokens= async (userId)=>{
+    try {
+        const user= User.findById(userId)
+
+        const accessToken= user.generateAccessToken()
+        const refreshToken= user.generateRefreshToken()
+
+        user.refreshToken= refreshToken
+        await user.save({validateBeforeSave: false})
+
+        return {accessToken, refreshToken}
+
+    } catch (error) {
+        throw new apiError(500, "Something went wrong while generating tokens")
+    }
+}
 
 const registerUser= asyncHandler( async (req, res)=>{
         const {fullName, userName, email, password}= req.body
@@ -15,14 +32,19 @@ const registerUser= asyncHandler( async (req, res)=>{
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         if(!emailRegex.test(email)) throw new apiError(400, "Invalid email!")
         
-            const exsitingUser= User.findOne({
+            const existingUser= await User.findOne({
                 $or:[{email},{password}]
             }
             )
-            if(exsitingUser) throw new apiError(409, "The user already exists")
+            if(existingUser) throw new apiError(409, "The user already exists")
 
                 const avatarLocalPath= req.files?.avatar[0]?.path
-                const coverImageLocalPath= req.files?.coverImage[0]?.path
+                //const coverImageLocalPath= req.files?.coverImage[0]?.path
+
+                let coverImageLocalPath
+                if(req.files && Array.isArray(req.files.coverImage)&& req.files.coverImage.length>0){
+                    coverImageLocalPath= req.files.coverImage[0].path
+                }
 
                 if(!avatarLocalPath) throw new apiError(400, "avatar image is required")
 
@@ -53,4 +75,69 @@ const registerUser= asyncHandler( async (req, res)=>{
 
 })
 
-export {registerUser}
+const loginUser= asyncHandler(async(req, res)=>{
+    const {email, userName, password}= req.body
+
+    if(!email && !userName) throw new apiError(400, "Email or userName is required")
+    if(!password) throw new apiError(400, "Password is required")
+
+    const user= await User.findOne({
+        $or:[{email},{userName}]})
+        if(!user) throw new apiError(404, "User not found")
+            const isPasswordValid= await user.isPasswordCorrect(password)
+            if(!isPasswordValid) throw new apiError(401, "Invalid password")
+
+            const  {refreshToken, accessToken}= await user.generateAcessandRefreshTokens(user._id)
+
+            const loggedInUser= User.findById(user._id).select("-password -refreshToken")
+
+            const options= {
+                httpOnly: true,
+                secure: true
+            }
+
+            res.status(200)
+            .cookie("accessToken", accessToken, options)
+            .cookie("refreshToken", refreshToken, options)
+            .json(
+                new apiResponse(
+                    200,
+                    {
+                        user: loggedInUser, accessToken, refreshToken
+                    },
+                    "User logged in successfully:)"
+                )
+            )
+
+})
+const logoutUser= asyncHandler(async (req, res)=>{
+            await User.findByIdAndUpdate(
+                req.user._id,
+                {
+                $set:{
+                    refreshToken: undefined
+                }
+            },
+        {
+            new:true
+        })
+        const options={
+            httpOnly: true,
+            secure: true
+        }
+
+        res.status(200)
+        .clearCookie("accessToken", options)
+        .clearCookie("refreshToken", options)
+        .json(
+            new apiResponse(200,{}, "User logged out successfully")
+        )
+})
+
+
+
+export {
+    registerUser,
+    loginUser,
+    logoutUser
+}

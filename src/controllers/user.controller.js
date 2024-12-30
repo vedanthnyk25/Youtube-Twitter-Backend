@@ -3,10 +3,11 @@ import {asyncHandler} from "../utils/asyncHandler.js"
 import {User} from "../models/user.model.js"
 import cloudinaryUpload from "../utils/cloudinary.js"
 import {apiResponse} from "../utils/apiResponse.js"
+import jwt from 'jsonwebtoken'
 
 const generateAcessandRefreshTokens= async (userId)=>{
     try {
-        const user= User.findById(userId)
+        const user= await User.findById(userId)
 
         const accessToken= user.generateAccessToken()
         const refreshToken= user.generateRefreshToken()
@@ -25,7 +26,7 @@ const registerUser= asyncHandler( async (req, res)=>{
         const {fullName, userName, email, password}= req.body
 
         if(
-            [fullName, userName, email, password].some((field)=> field?.trim==="")
+            [fullName, userName, email, password].some((field)=> field?.trim()==="")
         ){
             throw new apiError(400, "All fields are required!")
         }
@@ -33,7 +34,7 @@ const registerUser= asyncHandler( async (req, res)=>{
         if(!emailRegex.test(email)) throw new apiError(400, "Invalid email!")
         
             const existingUser= await User.findOne({
-                $or:[{email},{password}]
+                $or:[{email},{userName}]
             }
             )
             if(existingUser) throw new apiError(409, "The user already exists")
@@ -87,9 +88,9 @@ const loginUser= asyncHandler(async(req, res)=>{
             const isPasswordValid= await user.isPasswordCorrect(password)
             if(!isPasswordValid) throw new apiError(401, "Invalid password")
 
-            const  {refreshToken, accessToken}= await user.generateAcessandRefreshTokens(user._id)
+            const  {refreshToken, accessToken}= await generateAcessandRefreshTokens(user._id)
 
-            const loggedInUser= User.findById(user._id).select("-password -refreshToken")
+            const loggedInUser= await User.findById(user._id).select("-password -refreshToken")
 
             const options= {
                 httpOnly: true,
@@ -134,10 +135,47 @@ const logoutUser= asyncHandler(async (req, res)=>{
         )
 })
 
+const refreshAccessToken= asyncHandler(async (req, res)=>{
+    const incomingRefreshToken=  req.body.refreshToken||req.cookies.refreshToken
+
+    if(!incomingRefreshToken) throw new apiError(401, "Unauthorised request!")
+
+    try {
+        const decodedToken= jwt.verify(
+            incomingRefreshToken,
+            process.env.REFRESH_TOKEN_SECRET
+        )
+        const user= await User.findById(decodedToken._id)
+
+        if(!user) throw new apiError(400, "Invalid refresh token!")
+
+            if(incomingRefreshToken!== user.refreshToken) throw new apiError(400, "Refresh token invalid or is already expired!")
+
+                const {newRefreshToken, newAccessToken}= generateAcessandRefreshTokens(user._id)
+                
+                const options= {
+                    httpOnly: true,
+                    secure: true
+                }
+
+                res.status(200)
+                .cookie("accessToken", newAccessToken, options)
+                .cookie("refreshToken", newRefreshToken, options)
+                .json(
+                    200,{
+                        newAccessToken, refreshToken: newRefreshToken
+                    },
+                    "Tokens refreshed successfully"
+                )
+    } catch (error) {
+        throw new apiError(401, error?.message||"Invalid refresh token")
+    }
+})
 
 
 export {
     registerUser,
     loginUser,
-    logoutUser
+    logoutUser,
+    refreshAccessToken
 }
